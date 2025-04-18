@@ -847,7 +847,7 @@ print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
 
 
 ############
-## RNN
+## RNN For Regression
 ############
 
 
@@ -927,14 +927,79 @@ X_train, X_test, y_train, y_test, ts_train, ts_test, ids_train, ids_test = train
 )
 
 
+
+import keras_tuner as kt
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.optimizers import Adam
+
+def build_model(hp):
+    model = Sequential()
+    model.add(LSTM(
+        units=hp.Int('lstm_units', min_value=32, max_value=256, step=32),
+        activation=hp.Choice('lstm_activation', ['relu', 'tanh']),
+        input_shape=(X.shape[1], X.shape[2])
+    ))
+    model.add(Dense(
+        units=hp.Int('dense_units', min_value=16, max_value=128, step=16),
+        activation='relu'
+    ))
+    model.add(Dense(1))
+
+    model.compile(
+        optimizer=Adam(learning_rate=hp.Choice('lr', [1e-2, 1e-3, 1e-4])),
+        loss='mse'
+    )
+    return model
+
+tuner = kt.RandomSearch(
+    build_model,
+    objective='val_loss',
+    max_trials=10,
+    executions_per_trial=1,
+    directory='my_dir',
+    project_name='lstm_hyperparam_tuning'
+)
+
+tuner.search(X_train, y_train, epochs=10, validation_split=0.2, batch_size=16)
+
+# Get the best model
+best_model = tuner.get_best_models(num_models=1)[0]
+best_model.summary()
+
+
+best_model.optimizer.learning_rate.numpy()
+
+
+best_hps = tuner.get_best_hyperparameters(1)[0]
+
+print("Best hyperparameters:")
+print(f"LSTM units: {best_hps.get('lstm_units')}")
+print(f"LSTM activation: {best_hps.get('lstm_activation')}")
+print(f"Dense units: {best_hps.get('dense_units')}")
+print(f"Learning rate: {best_hps.get('lr')}")
+
+
+
+#Best hyperparameters:
+#LSTM units: 96
+#LSTM activation: relu
+#Dense units: 64
+#Learning rate: 0.001
+
+
+
+
+
 # --- Build and Train Model ---
 model = Sequential([
-    LSTM(128, activation='relu', input_shape=(X.shape[1], X.shape[2])),
-    Dense(32, activation='relu'),
+    LSTM(96, activation='relu', input_shape=(X.shape[1], X.shape[2])),
+    Dense(64, activation='relu'),
+    Dropout(0.2),
     Dense(1)
 ])
 
-model.compile(optimizer='adam', loss='mse')
+model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
 model.summary()
 
 model.fit(X_train, y_train, epochs=10, batch_size=16, validation_split=0.2)
@@ -944,6 +1009,15 @@ model.fit(X_train, y_train, epochs=10, batch_size=16, validation_split=0.2)
 # --- Predict on test set ---
 preds = model.predict(X_test)
 
+
+
+# Evaluate predictions
+mae = mean_absolute_error(y_test, preds)
+mse = mean_squared_error(y_test, preds)
+
+print(f"Mean Absolute Error (MAE): {mae:.4f}")
+print(f"Mean Squared Error (MSE): {mse:.4f}") 
+    
 
 
 # unscaled
@@ -996,6 +1070,216 @@ print(f"Mean Squared Error (MSE): {mse:.4f}")
     
     
    
+################
+######### RNN for Classification
+###############
     
+
+
+temporal_df=interpolated_df.copy()
+
+
+scaledRNN_classification = temporal_df.copy()
+
+
+# LSTM models (or any neural nets in Keras/TensorFlow) can’t use strings as targets — they need numeric values.
+def classify_mood(mood_score):
+    if mood_score <= 7:
+        return 0 # low
+    else:
+        return 1 # high
+
+# Apply the function to the 'mood' column
+
+scaledRNN_classification['mood_classification'] = scaledRNN_classification['mood'].apply(classify_mood)
+
+
+from sklearn.preprocessing import RobustScaler, MinMaxScaler
+
+scaledRNN_classification.reset_index(inplace=True)
+scaledRNN_classification.set_index(['id','time'],inplace=True,drop=True)
+
+columns_to_scale = [col for col in scaledRNN_classification.columns if col != 'mood_classification']
+
+
+minmaxscaler = MinMaxScaler()
+scaledRNN_classification[columns_to_scale] = minmaxscaler.fit_transform(scaledRNN_classification[columns_to_scale])
     
+scaledRNN_classification=scaledRNN_classification.drop(columns=['index'])
+
+scaledRNN_classification.to_csv('temporal_RNNclassification.csv')
+
+
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense ,Dropout
+from scikeras.wrappers import KerasRegressor
+from scikeras.wrappers import KerasClassifier
+
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from tensorflow.keras import optimizers, regularizers, Input
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Bidirectional, Dense, Dropout
+from keras_self_attention import SeqSelfAttention
+from sklearn.model_selection import train_test_split
+
+
+scaledRNN_classification.reset_index(inplace=True)
+scaledRNN_classification['time'] = pd.to_datetime(scaledRNN_classification['time'])
+scaledRNN_classification = scaledRNN_classification.sort_values(by=['id', 'time'])
+
+# --- Feature Engineering ---
+features = scaledRNN_classification.drop(columns=['id', 'time', 'mood', 'mood_classification','t'])
+target = scaledRNN_classification['mood_classification']
+ids = scaledRNN_classification['id']
+times = scaledRNN_classification['time']
+
+
+# --- Create sequences across all users ---
+SEQ_LEN = 3
+
+def create_sequences(X, y, time, ids, seq_len=SEQ_LEN):
+    Xs, ys, ts, id_seq = [], [], [], []
+    for i in range(len(X) - seq_len):
+        if ids[i] == ids[i + seq_len]:  # ensure same user in sequence
+            Xs.append(X[i:i+seq_len])
+            ys.append(y[i+seq_len])
+            ts.append(time[i+seq_len])
+            id_seq.append(ids[i+seq_len])
+    return np.array(Xs), np.array(ys), np.array(ts), np.array(id_seq)
+
+X, y, ts, ids_seq = create_sequences(features, target.values, times.values, ids.values)
+
+# --- Global random train-test split (users mixed in both) ---
+X_train, X_test, y_train, y_test, ts_train, ts_test, ids_train, ids_test = train_test_split(
+    X, y, ts, ids_seq, test_size=0.2, shuffle=True, random_state=42
+)
+
+
+
+import keras_tuner as kt
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.optimizers import Adam
+
+import keras_tuner as kt
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.optimizers import Adam
+
+def build_model(hp):
+    model = Sequential()
+
+    # LSTM layer
+    model.add(LSTM(
+        units=hp.Int('lstm_units', min_value=64, max_value=256, step=32),
+        activation=hp.Choice('lstm_activation', ['relu', 'tanh']),
+        input_shape=(X.shape[1], X.shape[2])
+    ))
+
+    # Dense layer
+    model.add(Dense(
+        units=hp.Int('dense_units', min_value=16, max_value=128, step=16),
+        activation='relu'
+    ))
+
+    # Output layer
+    model.add(Dense(1, activation='sigmoid'))
+
+    # Compile model
+    model.compile(
+        optimizer=Adam(learning_rate=hp.Choice('lr', [1e-2, 1e-3, 1e-4])),
+        loss='binary_crossentropy',
+        metrics=['accuracy']
+    )
+
+    return model
+
+
+tuner = kt.RandomSearch(
+    build_model,
+    objective='val_accuracy',
+    max_trials=10,
+    executions_per_trial=1,
+    directory='tuner_dir',
+    project_name='binary_lstm'
+)
+
+
+
+tuner.search(X_train, y_train, epochs=10,validation_split=0.2, batch_size=16)
+
+
+# Get the best model
+best_model = tuner.get_best_models(num_models=1)[0]
+best_model.summary()
+
+
+best_model.optimizer.learning_rate.numpy()
+
+
+best_hps = tuner.get_best_hyperparameters(1)[0]
+print("Best hyperparameters:")
+print(f"LSTM units: {best_hps.get('lstm_units')}")
+print(f"Activation: {best_hps.get('lstm_activation')}")
+print(f"Dense units: {best_hps.get('dense_units')}")
+print(f"Learning rate: {best_hps.get('lr')}")
+
+
+#Best hyperparameters:
+#LSTM units: 160
+#LSTM activation: relu
+#Dense units: 80
+#Learning rate: 0.001
+
+
+
+
+
+# --- Build and Train Model ---
+model = Sequential([
+    LSTM(160, activation='relu', input_shape=(X.shape[1], X.shape[2])),
+    Dense(80, activation='relu'),
+    Dense(1,activation='sigmoid')])
+
+model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy')
+model.summary()
+
+model.fit(X_train, y_train, epochs=10, batch_size=16, validation_split=0.2)
+
     
+y_pred = model.predict(X_test)
+
+y_pred_binary = (y_pred > 0.5).astype(int)
+
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
+
+# Accuracy
+acc = accuracy_score(y_test, y_pred_binary)
+
+# Precision, Recall, F1 for multiclass (macro, micro, weighted available)
+precision = precision_score(y_test, y_pred_binary)
+recall = recall_score(y_test, y_pred_binary)
+f1 = f1_score(y_test, y_pred_binary)
+
+# Print them
+print(f"Accuracy: {acc:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1 Score: {f1:.4f}")
+
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred_binary))
+print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred_binary))
+
+ 
