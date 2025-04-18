@@ -504,12 +504,11 @@ scaled = nontemporal_df.copy()
 scaled.reset_index(inplace=True)
 scaled.set_index(['id','time','t'],inplace=True,drop=True)
 
-columns_to_scale = [col for col in scaled.columns if col != 'mood']
+columns_to_scale = [col for col in scaled.columns]
 
 
 minmaxscaler = MinMaxScaler()
-for i in ids:
-    scaled.loc[i, columns_to_scale] = minmaxscaler.fit_transform(scaled.loc[i, columns_to_scale])
+scaled[columns_to_scale] = minmaxscaler.fit_transform(scaled[columns_to_scale])
     
 scaled=scaled.drop(columns=["mood_Agg_5day"])
 
@@ -591,8 +590,8 @@ print(f"Test RMSE: {rmse:.3f}")
 #Best parameters: {'max_depth': 20, 'max_features': 'sqrt', 'min_samples_leaf': 1, 'min_samples_split': 2, 'n_estimators': 500}
 #Test RMSE: 0.754
 
-model = RandomForestRegressor(max_depth=20, max_features = 'sqrt',min_samples_leaf=1, n_estimators = 500,
-                               min_samples_split=2, random_state=2)
+model = RandomForestRegressor(max_depth=40, max_features = 'sqrt',min_samples_leaf=1, n_estimators = 1000,
+                               min_samples_split=4, random_state=2)
 
 model.fit(X_train, y_train)
 
@@ -631,13 +630,39 @@ y_pred_series_full = pd.Series(y_pred, index=y_test.index, name='y_pred')
 # Get first ID from the MultiIndex
 first_id = "AS14.14"
 
+# unscaled
+y_test1 = np.repeat(y_test.values.reshape(-1,1), repeats=scaled.shape[1]+1,axis=1)
+y_test_unscaled = minmaxscaler.inverse_transform(y_test1)[:,0]
+
+
+y_pred1 = np.repeat(y_pred.reshape(-1,1), repeats=scaled.shape[1]+1,axis=1)
+y_pred_unscaled = minmaxscaler.inverse_transform(y_pred1)[:,0]
+
+
+# Metrics for unscaled data
+mae = mean_absolute_error(y_test_unscaled, y_pred_unscaled)
+mse = mean_squared_error(y_test_unscaled, y_pred_unscaled)
+rmse = np.sqrt(mse)
+
+
+# Print
+print(f"MAE:  {mae:.4f}")
+print(f"MSE:  {mse:.4f}")
+print(f"RMSE: {rmse:.4f}")
+
+
+
+
+
 # Filter y_test and y_pred for only that ID
 id_mask = y_test.index.get_level_values('id') == first_id
 time_index = y_test.index.get_level_values('time')[id_mask]
 
 # Create Series with time index for that ID
-y_test_series = pd.Series(y_test.values[id_mask], index=time_index)
-y_pred_series = pd.Series(y_pred[id_mask], index=time_index)
+y_test_series = pd.Series(y_test_unscaled[id_mask], index=time_index)
+y_pred_series = pd.Series(y_pred_unscaled[id_mask], index=time_index)
+
+
 
 # Sort both by time
 y_test_sorted = y_test_series.sort_index()
@@ -670,7 +695,9 @@ plt.show()
 ## RF for classification
 ############
 
-scaled_classification = scaled.copy()
+
+
+scaled_classification = nontemporal_df.copy()
 
 def classify_mood(mood_score):
     if mood_score <= 7:
@@ -700,6 +727,26 @@ def univariate_cont_analyis(*columns):
 univariate_cont_analyis('mood','mood_classification')
 
 scaled_classification=scaled_classification.drop(columns=["mood"])
+
+
+
+from sklearn.preprocessing import RobustScaler, MinMaxScaler
+
+scaled_classification.reset_index(inplace=True)
+scaled_classification.set_index(['id','time','t'],inplace=True,drop=True)
+
+columns_to_scale = [col for col in scaled_classification.columns if col != 'mood_classification']
+
+
+minmaxscaler = MinMaxScaler()
+scaled_classification[columns_to_scale] = minmaxscaler.fit_transform(scaled_classification[columns_to_scale])
+    
+scaled_classification=scaled_classification.drop(columns=["mood_Agg_5day"])
+
+scaled_classification.to_csv('nontemporal_classification.csv')
+
+scaled_classification = scaled_classification.groupby(level=0).apply(lambda group: group.iloc[5:]).reset_index(level=0, drop=True)
+
 
 
 
@@ -781,17 +828,14 @@ f1 = f1_score(y_test, y_pred, average='weighted')
 
 # Print them
 print(f"Accuracy: {acc:.4f}")
-print(f"Precision (weighted): {precision:.4f}")
-print(f"Recall (weighted): {recall:.4f}")
-print(f"F1 Score (weighted): {f1:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1 Score: {f1:.4f}")
 
 # Optional: full report
 print("\nClassification Report:")
 print(classification_report(y_test, y_pred))
-
-y_pred_series_full = pd.Series(y_pred, index=y_test.index, name='y_pred')
-
-
+print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
 
 
 
@@ -815,12 +859,12 @@ scaledRNN = temporal_df.copy()
 scaledRNN.reset_index(inplace=True)
 scaledRNN.set_index(['id','time','t'],inplace=True,drop=True)
 
-columns_to_scale = [col for col in scaledRNN.columns if col != 'mood']
+columns_to_scale = [col for col in scaledRNN.columns]
 
 
 minmaxscaler = MinMaxScaler()
-for i in ids:
-    scaledRNN.loc[i, columns_to_scale] = minmaxscaler.fit_transform(scaledRNN.loc[i, columns_to_scale])
+
+scaledRNN[columns_to_scale] = minmaxscaler.fit_transform(scaledRNN[columns_to_scale])
 
 
 scaledRNN.reset_index(inplace=True)
@@ -889,15 +933,27 @@ model = Sequential([
     Dense(32, activation='relu'),
     Dense(1)
 ])
-model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+
+model.compile(optimizer='adam', loss='mse')
 model.summary()
 
-model.fit(X_train, y_train, epochs=40, batch_size=8, validation_split=0.2)
+model.fit(X_train, y_train, epochs=10, batch_size=16, validation_split=0.2)
 
 
 
 # --- Predict on test set ---
 preds = model.predict(X_test)
+
+
+
+# unscaled
+y_test1 = np.repeat(y_test.reshape(-1,1), repeats=scaled.shape[1]+1,axis=1)
+y_test_unscaled = minmaxscaler.inverse_transform(y_test1)[:,6]
+
+
+y_pred1 = np.repeat(preds.reshape(-1,1), repeats=scaled.shape[1]+1,axis=1)
+y_pred_unscaled = minmaxscaler.inverse_transform(y_pred1)[:,6]
+
 
 # --- Plot predictions separately per user ---
 unique_ids = np.unique(ids_test)
@@ -910,8 +966,8 @@ for uid in unique_ids:
     # Sort data by time
     sorted_indices = np.argsort(ts_test[idx])
     ts_sorted = ts_test[idx][sorted_indices]
-    y_sorted = y_test[idx][sorted_indices]
-    preds_sorted = preds[idx][sorted_indices]
+    y_sorted = y_test_unscaled[idx][sorted_indices]
+    preds_sorted = y_pred_unscaled[idx][sorted_indices]
 
     # Plot the data
     plt.figure(figsize=(10, 5))
@@ -928,10 +984,10 @@ for uid in unique_ids:
     
     
     
-  
+
 # Evaluate predictions
-mae = mean_absolute_error(y_test, preds)
-mse = mean_squared_error(y_test, preds)
+mae = mean_absolute_error(y_test_unscaled, y_pred_unscaled)
+mse = mean_squared_error(y_test_unscaled, y_pred_unscaled)
 
 print(f"Mean Absolute Error (MAE): {mae:.4f}")
 print(f"Mean Squared Error (MSE): {mse:.4f}") 
@@ -939,6 +995,7 @@ print(f"Mean Squared Error (MSE): {mse:.4f}")
     
     
     
+   
     
     
     
